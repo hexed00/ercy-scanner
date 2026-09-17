@@ -1,11 +1,12 @@
 import discord
 from discord.ext import commands, tasks
 import os
-import time
 import asyncio
 from datetime import datetime, timezone
 import aiohttp
 import requests
+from urllib.parse import urlparse, parse_qs
+import re
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -13,15 +14,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-UNIVERSE_ID = os.getenv("UNIVERSE_ID", "5946282691")
 UPDATE_INTERVAL = 15
 
 class ErcyScanner(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.webhook_url = WEBHOOK_URL
-        self.universe_id = UNIVERSE_ID
         self.place_id = ""
+        self.universe_id = ""
+        self.game_name = "Unknown"
         self.running = False
         self.last_message_id = None
         self.last_servers_hash = None
@@ -36,27 +37,48 @@ class ErcyScanner(commands.Cog):
         except Exception as e:
             print(f"✗ Command sync failed: {e}")
 
-    async def get_game_data(self):
+    def extract_place_id(self, url_or_id):
+        """Extract place ID from Roblox URL or return if already ID"""
+        # if it's just a number, return it
+        if url_or_id.isdigit():
+            return url_or_id
+        
+        # try to extract from URL
+        match = re.search(r'/games/(\d+)', url_or_id)
+        if match:
+            return match.group(1)
+        
+        return None
+
+    async def get_universe_id(self, place_id):
+        """Get universe ID from place ID"""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://games.roblox.com/v1/games?universeIds={self.universe_id}", timeout=aiohttp.ClientTimeout(total=12)) as r:
+                async with session.get(f"https://apis.roblox.com/universes/v1/places/{place_id}/universe", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        return str(data.get("universeId"))
+        except Exception as e:
+            print(f"Universe lookup error: {e}")
+        return None
+
+    async def get_game_data(self, universe_id):
+        """Get game data from universe ID"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://games.roblox.com/v1/games?universeIds={universe_id}", timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status == 200:
                         data = await r.json()
                         if data.get("data"):
-                            g = data["data"][0]
-                            playing = g.get("playing", 0) or 0
-                            root_place = g.get("rootPlaceId")
-                            if root_place and not self.place_id:
-                                self.place_id = str(root_place)
-                            return playing, g
+                            return data["data"][0]
         except Exception as e:
             print(f"Game data error: {e}")
-        return None, None
+        return None
 
-    async def get_game_icon(self):
+    async def get_game_icon(self, universe_id):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={self.universe_id}&size=512x512&format=Png", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                async with session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={universe_id}&size=512x512&format=Png", timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status == 200:
                         data = await r.json()
                         if data.get("data"):
@@ -76,7 +98,7 @@ class ErcyScanner(commands.Cog):
                     url = f"https://games.roblox.com/v1/games/{place_id}/servers/Public?sortOrder=Desc&excludeFullGames=false&limit={min(100, limit)}"
                     if cursor:
                         url += f"&cursor={cursor}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=14)) as r:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
                         if r.status != 200:
                             break
                         data = await r.json()
@@ -99,7 +121,7 @@ class ErcyScanner(commands.Cog):
             pass
         self.last_message_id = None
 
-    def send_webhook(self, playing, server_count, servers, icon):
+    def send_webhook(self, playing, server_count, servers, icon, game_name):
         self.delete_old_message()
 
         lines = []
@@ -110,12 +132,12 @@ class ErcyScanner(commands.Cog):
             ping = s.get("ping")
             ping_s = f"  {ping}ms" if ping is not None else ""
             lines.append(f"`{i:02d}`  **{p}/{mx}**{ping_s}  `{sid}…`")
-        server_text = "\n".join(lines) if lines else "_No public servers returned_"
+        server_text = "\n".join(lines) if lines else "_No public servers_"
         if len(servers) > 25:
             server_text += f"\n_…and {len(servers) - 25} more_"
 
         embed = {
-            "title": "SHINJUKU 1988  •  Ercy Scanner",
+            "title": f"{game_name}  •  Ercy Scanner",
             "description": f"**Players Online:** `{playing}`\n**Active Servers:** `{server_count}`",
             "color": 0x9B59B6,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -132,102 +154,134 @@ class ErcyScanner(commands.Cog):
                 data = r.json()
                 self.last_message_id = data.get("id")
                 return True
-            else:
-                print(f"Webhook post {r.status_code}")
         except Exception as e:
             print(f"Webhook send failed: {e}")
         return False
 
     @tasks.loop(seconds=UPDATE_INTERVAL)
     async def scan_task(self):
-        if not self.running:
+        if not self.running or not self.place_id or not self.universe_id:
             return
 
         try:
-            playing, game = await self.get_game_data()
-            icon = await self.get_game_icon()
+            game = await self.get_game_data(self.universe_id)
+            icon = await self.get_game_icon(self.universe_id)
 
-            if playing is None:
+            if not game:
                 return
 
-            place = self.place_id or (str(game.get("rootPlaceId")) if game else None)
-            servers = await self.get_server_list(place) if place else []
+            playing = game.get("playing", 0) or 0
+            servers = await self.get_server_list(self.place_id)
             server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
 
             servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
 
             if servers_hash != self.last_servers_hash:
-                ok = self.send_webhook(playing, server_count, servers, icon)
+                ok = self.send_webhook(playing, server_count, servers, icon, self.game_name)
                 self.last_servers_hash = servers_hash
                 print(f"✓ Updated: {playing} players, {server_count} servers" if ok else f"✗ Webhook failed")
 
         except Exception as e:
             print(f"Loop error: {e}")
 
-    @discord.app_commands.command(name="scan", description="Ercy Scanner controls")
-    @discord.app_commands.describe(action="start, stop, or test", universe="Universe ID", place="Place ID")
-    async def scan_command(self, interaction: discord.Interaction, action: str, universe: str = None, place: str = None):
+    @discord.app_commands.command(name="link", description="Paste Roblox game link to start scanning")
+    @discord.app_commands.describe(url="Roblox game URL or place ID")
+    async def link_command(self, interaction: discord.Interaction, url: str):
+        if not self.webhook_url:
+            await interaction.response.send_message("❌ WEBHOOK_URL not set in environment", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        place_id = self.extract_place_id(url.strip())
+        if not place_id:
+            await interaction.followup.send("❌ Invalid URL or ID format")
+            return
+
+        # get universe ID from place ID
+        universe_id = await self.get_universe_id(place_id)
+        if not universe_id:
+            await interaction.followup.send("❌ Could not find universe ID — invalid game?")
+            return
+
+        # fetch game data
+        game = await self.get_game_data(universe_id)
+        if not game:
+            await interaction.followup.send("❌ Could not fetch game data from Roblox API")
+            return
+
+        # start scanning
+        self.place_id = place_id
+        self.universe_id = universe_id
+        self.game_name = game.get("name", "Unknown Game")
+        self.running = True
+        self.last_message_id = None
+        self.last_servers_hash = None
+
+        playing = game.get("playing", 0) or 0
+        icon = await self.get_game_icon(universe_id)
+        servers = await self.get_server_list(place_id)
+        server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
+        servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
+
+        ok = self.send_webhook(playing, server_count, servers, icon, self.game_name)
+        self.last_servers_hash = servers_hash
+
+        print(f"✓ Scanner started — {self.game_name} ({universe_id})")
+        await interaction.followup.send(f"✓ **Scanning:** {self.game_name}\n**Players:** `{playing}`\n**Servers:** `{server_count}`\n**Place ID:** `{place_id}`")
+
+    @discord.app_commands.command(name="stop", description="Stop the scanner")
+    async def stop_command(self, interaction: discord.Interaction):
+        if not self.running:
+            await interaction.response.send_message("⚠ Scanner not running", ephemeral=True)
+            return
+        
+        self.running = False
+        self.delete_old_message()
+        print("✗ Scanner stopped")
+        await interaction.response.send_message("✓ Scanner stopped & message deleted", ephemeral=True)
+
+    @discord.app_commands.command(name="status", description="Check scanner status")
+    async def status_command(self, interaction: discord.Interaction):
+        if self.running:
+            msg = f"✓ **Running**\n**Game:** {self.game_name}\n**Place ID:** `{self.place_id}`\n**Universe ID:** `{self.universe_id}`"
+        else:
+            msg = "❌ **Not running** — use `/link` to start"
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @discord.app_commands.command(name="test", description="Test webhook connection")
+    async def test_command(self, interaction: discord.Interaction):
         if not self.webhook_url:
             await interaction.response.send_message("❌ WEBHOOK_URL not set", ephemeral=True)
             return
 
-        action = action.lower().strip()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            r = requests.post(f"{self.webhook_url}?wait=true", json={"embeds": [{"title": "✓ Webhook Test", "description": "Connection successful.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat()}]}, timeout=10)
+            if r.status_code in (200, 204):
+                await interaction.followup.send("✓ Webhook test passed")
+            else:
+                await interaction.followup.send(f"❌ Webhook returned {r.status_code}")
+        except Exception as e:
+            await interaction.followup.send(f"❌ {e}")
 
-        if action == "start":
-            if self.running:
-                await interaction.response.send_message("⚠ Scanner already running", ephemeral=True)
-                return
+    @discord.app_commands.command(name="help", description="Show all commands")
+    async def help_command(self, interaction: discord.Interaction):
+        help_text = """
+**Ercy Scanner Commands:**
 
-            await interaction.response.defer()
-            
-            self.universe_id = universe or UNIVERSE_ID
-            self.place_id = place or ""
-            self.running = True
-            self.last_message_id = None
-            self.last_servers_hash = None
+`/link <URL or ID>` — Paste Roblox game URL or place ID to start scanning
+Example: `/link https://www.roblox.com/games/17375940438/SHINJUKU-1988`
 
-            try:
-                playing, game = await self.get_game_data()
-                if playing is None:
-                    await interaction.followup.send("❌ Failed to fetch from Roblox API — check UNIVERSE_ID")
-                    self.running = False
-                    return
+`/stop` — Stop the scanner
 
-                icon = await self.get_game_icon()
-                place_id = self.place_id or (str(game.get("rootPlaceId")) if game else None)
-                servers = await self.get_server_list(place_id) if place_id else []
-                server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
-                servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
-                
-                ok = self.send_webhook(playing, server_count, servers, icon)
-                self.last_servers_hash = servers_hash
-                print(f"✓ Scanner started — universe {self.universe_id}")
-                await interaction.followup.send(f"✓ Scanner started\n**Universe:** `{self.universe_id}`\n**Players:** `{playing}`\n**Servers:** `{server_count}`")
-            except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
-                self.running = False
+`/status` — Check if scanner is running
 
-        elif action == "stop":
-            if not self.running:
-                await interaction.response.send_message("⚠ Scanner not running", ephemeral=True)
-                return
-            self.running = False
-            self.delete_old_message()
-            print("✗ Scanner stopped")
-            await interaction.response.send_message("✓ Scanner stopped", ephemeral=True)
+`/test` — Test webhook connection
 
-        elif action == "test":
-            await interaction.response.defer(ephemeral=True)
-            try:
-                r = requests.post(f"{self.webhook_url}?wait=true", json={"embeds": [{"title": "Ercy Scanner — Test", "description": "Webhook connected.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "Ercy Scanner"}}]}, timeout=12)
-                if r.status_code in (200, 204):
-                    await interaction.followup.send("✓ Webhook test successful")
-                else:
-                    await interaction.followup.send(f"❌ Webhook returned {r.status_code}")
-            except Exception as e:
-                await interaction.followup.send(f"❌ {e}")
-        else:
-            await interaction.response.send_message("❌ Use: start, stop, or test", ephemeral=True)
+`/help` — Show this message
+"""
+        await interaction.response.send_message(help_text, ephemeral=True)
 
 
 async def main():
