@@ -15,7 +15,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or "YOUR_TOKEN_HERE"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "YOUR_WEBHOOK_HERE"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "
+https://discord.com/api/webhooks/1537445519914311730/0iKL1fgoR6IBiUwkPGgy0TrSC-e2Ku2_S5UOXdkIqGxf_P0omfVKH59tgPDELmrQRKyr"
 UNIVERSE_ID = "5946282691"
 UPDATE_INTERVAL = 15
 
