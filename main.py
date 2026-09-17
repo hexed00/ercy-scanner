@@ -1,12 +1,13 @@
 # ercy_scanner.py
 # discord bot + ercy scanner for railway
 # slash commands: /scan start, /scan stop, /scan test
-# webhook sends exact embed, replaces old message every update
+# webhook & token pulled from railway env
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import os
 import time
+import asyncio
 from datetime import datetime, timezone
 import requests
 
@@ -14,15 +15,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or "YOUR_TOKEN_HERE"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://discord.com/api/webhooks/1537445519914311730/0iKL1fgoR6IBiUwkPGgy0TrSC-e2Ku2_S5UOXdkIqGxf_P0omfVKH59tgPDELmrQRKyr"
-UNIVERSE_ID = "5946282691"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+UNIVERSE_ID = os.getenv("UNIVERSE_ID", "5946282691")
 UPDATE_INTERVAL = 15
 
 class ErcyScanner(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.webhook_url = ""
+        self.webhook_url = WEBHOOK_URL
         self.universe_id = UNIVERSE_ID
         self.place_id = ""
         self.running = False
@@ -32,6 +33,8 @@ class ErcyScanner(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print(f"✓ Logged in as {self.bot.user}")
+        if not self.webhook_url:
+            print("⚠ WARNING: WEBHOOK_URL not set in environment")
 
     def validate_webhook(self, url):
         url = (url or "").strip()
@@ -40,12 +43,7 @@ class ErcyScanner(commands.Cog):
         low = url.lower()
         if "discord.com/api/webhooks/" not in low and "discordapp.com/api/webhooks/" not in low:
             return False
-        try:
-            if "/webhooks/" in url:
-                return True
-        except Exception:
-            pass
-        return False
+        return True
 
     async def get_game_data(self):
         try:
@@ -181,25 +179,23 @@ class ErcyScanner(commands.Cog):
     @discord.app_commands.command(name="scan", description="Scanner controls")
     @discord.app_commands.describe(
         action="start, stop, or test",
-        webhook="Discord webhook URL (for start)",
-        universe="Universe ID (for start)",
+        universe="Universe ID (optional, defaults to env)",
         place="Place ID (optional)"
     )
     async def scan_command(
         self,
         interaction: discord.Interaction,
         action: str,
-        webhook: str = None,
         universe: str = None,
         place: str = None,
     ):
+        if not self.webhook_url:
+            await interaction.response.send_message("❌ WEBHOOK_URL not set in environment", ephemeral=True)
+            return
+
         action = action.lower().strip()
 
         if action == "start":
-            if not webhook or not self.validate_webhook(webhook):
-                await interaction.response.send_message("❌ Provide a valid Discord webhook URL", ephemeral=True)
-                return
-            self.webhook_url = webhook
             self.universe_id = universe or UNIVERSE_ID
             self.place_id = place or ""
             self.running = True
@@ -215,11 +211,8 @@ class ErcyScanner(commands.Cog):
             await interaction.response.send_message("✓ Scanner stopped", ephemeral=True)
 
         elif action == "test":
-            if not webhook or not self.validate_webhook(webhook):
-                await interaction.response.send_message("❌ Provide a valid Discord webhook URL", ephemeral=True)
-                return
             try:
-                r = requests.post(f"{webhook}?wait=true", json={"embeds": [{"title": "Ercy Scanner — Test", "description": "Webhook connected. Scanner is ready.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "Ercy Scanner"}}]}, timeout=12)
+                r = requests.post(f"{self.webhook_url}?wait=true", json={"embeds": [{"title": "Ercy Scanner — Test", "description": "Webhook connected. Scanner is ready.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "Ercy Scanner"}}]}, timeout=12)
                 if r.status_code in (200, 204):
                     await interaction.response.send_message("✓ Webhook test successful", ephemeral=True)
                 else:
@@ -237,5 +230,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
