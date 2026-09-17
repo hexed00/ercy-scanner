@@ -4,6 +4,7 @@ import os
 import time
 import asyncio
 from datetime import datetime, timezone
+import aiohttp
 import requests
 
 intents = discord.Intents.default()
@@ -35,33 +36,31 @@ class ErcyScanner(commands.Cog):
         except Exception as e:
             print(f"✗ Command sync failed: {e}")
 
-    def validate_webhook(self, url):
-        url = (url or "").strip()
-        if not url:
-            return False
-        return "discord.com/api/webhooks/" in url.lower() or "discordapp.com/api/webhooks/" in url.lower()
-
     async def get_game_data(self):
         try:
-            r = requests.get(f"https://games.roblox.com/v1/games?universeIds={self.universe_id}", timeout=12)
-            data = r.json()
-            if data.get("data"):
-                g = data["data"][0]
-                playing = g.get("playing", 0) or 0
-                root_place = g.get("rootPlaceId")
-                if root_place and not self.place_id:
-                    self.place_id = str(root_place)
-                return playing, g
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://games.roblox.com/v1/games?universeIds={self.universe_id}", timeout=aiohttp.ClientTimeout(total=12)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        if data.get("data"):
+                            g = data["data"][0]
+                            playing = g.get("playing", 0) or 0
+                            root_place = g.get("rootPlaceId")
+                            if root_place and not self.place_id:
+                                self.place_id = str(root_place)
+                            return playing, g
         except Exception as e:
             print(f"Game data error: {e}")
         return None, None
 
     async def get_game_icon(self):
         try:
-            r = requests.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={self.universe_id}&size=512x512&format=Png", timeout=10)
-            data = r.json()
-            if data.get("data"):
-                return data["data"][0].get("imageUrl")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={self.universe_id}&size=512x512&format=Png", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        if data.get("data"):
+                            return data["data"][0].get("imageUrl")
         except Exception:
             pass
         return None
@@ -72,20 +71,21 @@ class ErcyScanner(commands.Cog):
         servers = []
         cursor = None
         try:
-            for _ in range(3):
-                url = f"https://games.roblox.com/v1/games/{place_id}/servers/Public?sortOrder=Desc&excludeFullGames=false&limit={min(100, limit)}"
-                if cursor:
-                    url += f"&cursor={cursor}"
-                r = requests.get(url, timeout=14)
-                if r.status_code != 200:
-                    break
-                data = r.json()
-                batch = data.get("data") or []
-                servers.extend(batch)
-                cursor = data.get("nextPageCursor")
-                if not cursor or len(servers) >= limit:
-                    break
-                time.sleep(0.25)
+            async with aiohttp.ClientSession() as session:
+                for _ in range(3):
+                    url = f"https://games.roblox.com/v1/games/{place_id}/servers/Public?sortOrder=Desc&excludeFullGames=false&limit={min(100, limit)}"
+                    if cursor:
+                        url += f"&cursor={cursor}"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=14)) as r:
+                        if r.status != 200:
+                            break
+                        data = await r.json()
+                        batch = data.get("data") or []
+                        servers.extend(batch)
+                        cursor = data.get("nextPageCursor")
+                        if not cursor or len(servers) >= limit:
+                            break
+                        await asyncio.sleep(0.25)
         except Exception as e:
             print(f"Server list error: {e}")
         return servers[:limit]
@@ -133,7 +133,7 @@ class ErcyScanner(commands.Cog):
                 self.last_message_id = data.get("id")
                 return True
             else:
-                print(f"Webhook post {r.status_code}: {r.text[:120]}")
+                print(f"Webhook post {r.status_code}")
         except Exception as e:
             print(f"Webhook send failed: {e}")
         return False
@@ -160,18 +160,12 @@ class ErcyScanner(commands.Cog):
                 ok = self.send_webhook(playing, server_count, servers, icon)
                 self.last_servers_hash = servers_hash
                 print(f"✓ Updated: {playing} players, {server_count} servers" if ok else f"✗ Webhook failed")
-            else:
-                print(f"• No change ({playing} players)")
 
         except Exception as e:
             print(f"Loop error: {e}")
 
     @discord.app_commands.command(name="scan", description="Ercy Scanner controls")
-    @discord.app_commands.describe(
-        action="start, stop, or test",
-        universe="Universe ID (optional)",
-        place="Place ID (optional)"
-    )
+    @discord.app_commands.describe(action="start, stop, or test", universe="Universe ID", place="Place ID")
     async def scan_command(self, interaction: discord.Interaction, action: str, universe: str = None, place: str = None):
         if not self.webhook_url:
             await interaction.response.send_message("❌ WEBHOOK_URL not set", ephemeral=True)
@@ -184,18 +178,22 @@ class ErcyScanner(commands.Cog):
                 await interaction.response.send_message("⚠ Scanner already running", ephemeral=True)
                 return
 
+            await interaction.response.defer()
+            
             self.universe_id = universe or UNIVERSE_ID
             self.place_id = place or ""
             self.running = True
             self.last_message_id = None
             self.last_servers_hash = None
 
-            await interaction.response.defer()
-            
-            playing, game = await self.get_game_data()
-            icon = await self.get_game_icon()
+            try:
+                playing, game = await self.get_game_data()
+                if playing is None:
+                    await interaction.followup.send("❌ Failed to fetch from Roblox API — check UNIVERSE_ID")
+                    self.running = False
+                    return
 
-            if playing is not None:
+                icon = await self.get_game_icon()
                 place_id = self.place_id or (str(game.get("rootPlaceId")) if game else None)
                 servers = await self.get_server_list(place_id) if place_id else []
                 server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
@@ -204,9 +202,9 @@ class ErcyScanner(commands.Cog):
                 ok = self.send_webhook(playing, server_count, servers, icon)
                 self.last_servers_hash = servers_hash
                 print(f"✓ Scanner started — universe {self.universe_id}")
-                await interaction.followup.send(f"✓ Scanner started & live\n**Universe:** `{self.universe_id}`\n**Players:** `{playing}`\n**Servers:** `{server_count}`")
-            else:
-                await interaction.followup.send("❌ Failed to fetch initial data")
+                await interaction.followup.send(f"✓ Scanner started\n**Universe:** `{self.universe_id}`\n**Players:** `{playing}`\n**Servers:** `{server_count}`")
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
                 self.running = False
 
         elif action == "stop":
