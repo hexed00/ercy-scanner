@@ -1,9 +1,3 @@
-# ercy_scanner.py
-# discord bot + ercy scanner for railway
-# /scan start - sends embed instantly, updates on server changes, runs forever
-# /scan stop - stops the scanner
-# /scan test - tests webhook
-
 import discord
 from discord.ext import commands, tasks
 import os
@@ -35,17 +29,17 @@ class ErcyScanner(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print(f"✓ Logged in as {self.bot.user}")
-        if not self.webhook_url:
-            print("⚠ WARNING: WEBHOOK_URL not set in environment")
+        try:
+            await self.bot.tree.sync()
+            print("✓ Commands synced")
+        except Exception as e:
+            print(f"✗ Command sync failed: {e}")
 
     def validate_webhook(self, url):
         url = (url or "").strip()
         if not url:
             return False
-        low = url.lower()
-        if "discord.com/api/webhooks/" not in low and "discordapp.com/api/webhooks/" not in low:
-            return False
-        return True
+        return "discord.com/api/webhooks/" in url.lower() or "discordapp.com/api/webhooks/" in url.lower()
 
     async def get_game_data(self):
         try:
@@ -126,13 +120,7 @@ class ErcyScanner(commands.Cog):
             "color": 0x9B59B6,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "footer": {"text": "Ercy Scanner • Live"},
-            "fields": [
-                {
-                    "name": f"Server List ({min(len(servers), 25)} shown)",
-                    "value": (server_text[:1020] or "—"),
-                    "inline": False,
-                }
-            ],
+            "fields": [{"name": f"Server List ({min(len(servers), 25)} shown)", "value": (server_text[:1020] or "—"), "inline": False}],
         }
         if icon:
             embed["thumbnail"] = {"url": icon}
@@ -178,21 +166,15 @@ class ErcyScanner(commands.Cog):
         except Exception as e:
             print(f"Loop error: {e}")
 
-    @discord.app_commands.command(name="scan", description="Scanner controls")
+    @discord.app_commands.command(name="scan", description="Ercy Scanner controls")
     @discord.app_commands.describe(
         action="start, stop, or test",
-        universe="Universe ID (optional, defaults to env)",
+        universe="Universe ID (optional)",
         place="Place ID (optional)"
     )
-    async def scan_command(
-        self,
-        interaction: discord.Interaction,
-        action: str,
-        universe: str = None,
-        place: str = None,
-    ):
+    async def scan_command(self, interaction: discord.Interaction, action: str, universe: str = None, place: str = None):
         if not self.webhook_url:
-            await interaction.response.send_message("❌ WEBHOOK_URL not set in environment", ephemeral=True)
+            await interaction.response.send_message("❌ WEBHOOK_URL not set", ephemeral=True)
             return
 
         action = action.lower().strip()
@@ -208,14 +190,14 @@ class ErcyScanner(commands.Cog):
             self.last_message_id = None
             self.last_servers_hash = None
 
-            # fetch and send first embed instantly
             await interaction.response.defer()
+            
             playing, game = await self.get_game_data()
             icon = await self.get_game_icon()
 
             if playing is not None:
-                place = self.place_id or (str(game.get("rootPlaceId")) if game else None)
-                servers = await self.get_server_list(place) if place else []
+                place_id = self.place_id or (str(game.get("rootPlaceId")) if game else None)
+                servers = await self.get_server_list(place_id) if place_id else []
                 server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
                 servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
                 
@@ -234,17 +216,18 @@ class ErcyScanner(commands.Cog):
             self.running = False
             self.delete_old_message()
             print("✗ Scanner stopped")
-            await interaction.response.send_message("✓ Scanner stopped & message deleted", ephemeral=True)
+            await interaction.response.send_message("✓ Scanner stopped", ephemeral=True)
 
         elif action == "test":
+            await interaction.response.defer(ephemeral=True)
             try:
-                r = requests.post(f"{self.webhook_url}?wait=true", json={"embeds": [{"title": "Ercy Scanner — Test", "description": "Webhook connected. Scanner is ready.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "Ercy Scanner"}}]}, timeout=12)
+                r = requests.post(f"{self.webhook_url}?wait=true", json={"embeds": [{"title": "Ercy Scanner — Test", "description": "Webhook connected.", "color": 0x9B59B6, "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "Ercy Scanner"}}]}, timeout=12)
                 if r.status_code in (200, 204):
-                    await interaction.response.send_message("✓ Webhook test successful", ephemeral=True)
+                    await interaction.followup.send("✓ Webhook test successful")
                 else:
-                    await interaction.response.send_message(f"❌ Webhook returned {r.status_code}", ephemeral=True)
+                    await interaction.followup.send(f"❌ Webhook returned {r.status_code}")
             except Exception as e:
-                await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+                await interaction.followup.send(f"❌ {e}")
         else:
             await interaction.response.send_message("❌ Use: start, stop, or test", ephemeral=True)
 
