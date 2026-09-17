@@ -13,6 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+import sys
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -311,7 +312,7 @@ class ErcyScanner:
             "footer": {"text": "Ercy Scanner • Live"},
             "fields": [
                 {
-                    "name": f"Server List ({min(len(servers), 25)} shown)",
+                    "name": f"Server List ({min(len(servers), 25)) shown)",
                     "value": (server_text[:1020] or "—"),
                     "inline": False,
                 }
@@ -395,7 +396,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-bot.setup_hook = setup_hook
-
-if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
