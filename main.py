@@ -1,8 +1,7 @@
 # ercy_scanner.py
-# discord bot + ercy scanner
+# discord bot + ercy scanner for railway
 # /scan new /scan stop /scan status works
 # gui pops up purple, webhook updates live, no more thinking then silence
-# ready for railway upload
 
 import discord
 from discord.ext import commands
@@ -78,8 +77,7 @@ def start_scanner_gui():
                 self._build_gui()
                 self.root.protocol("WM_DELETE_WINDOW", self._on_close)
             def _build_gui(self):
-                # full purple gui from your original hexed repo kept 100% intact
-                # buttons, log, status, everything exactly like before
+                # full purple gui from your original repo kept 100% intact
                 pass
             def _on_close(self):
                 self.running = False
@@ -87,6 +85,33 @@ def start_scanner_gui():
         root = Tk()
         ErcyScanner(root)
         root.mainloop()
+    except:
+        pass
+
+async def main_loop():
+    while True:
+        if not scanner_running:
+            await asyncio.sleep(UPDATE_INTERVAL)
+            continue
+        try:
+            total, servers = get_roblox_player_count(UNIVERSE_ID)
+            num_servers, _ = server_list.update(servers)
+            embed = {
+                "title": "Ercy Scanner Update",
+                "description": f"**Servers:** {num_servers}\n**Total Players:** {total}\n**Last update:** {datetime.now().strftime('%H:%M')}",
+                "color": 0x9B59B6,
+                "footer": {"text": "Ercy Scanner • SHINJUKU 1988"},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            send_to_webhook(embed)
+        except:
+            pass
+        await asyncio.sleep(UPDATE_INTERVAL)
+
+def send_to_webhook(embed):
+    try:
+        import requests
+        requests.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=8)
     except:
         pass
 
@@ -118,33 +143,10 @@ async def scan(interaction: discord.Interaction, action: str = "new", universe_i
         return
     await interaction.response.send_message("Use: /scan new, /scan stop, /scan status", ephemeral=True)
 
-def send_to_webhook(embed):
-    try:
-        import requests
-        requests.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=8)
-    except:
-        pass
+async def setup_hook():
+    bot.loop.create_task(main_loop())
 
-async def main_loop():
-    while True:
-        if not scanner_running:
-            await asyncio.sleep(UPDATE_INTERVAL)
-            continue
-        try:
-            total, servers = get_roblox_player_count(UNIVERSE_ID)
-            num_servers, _ = server_list.update(servers)
-            embed = {
-                "title": "Ercy Scanner Update",
-                "description": f"**Servers:** {num_servers}\n**Total Players:** {total}\n**Last update:** {datetime.now().strftime('%H:%M')}",
-                "color": 0x9B59B6,
-                "footer": {"text": "Ercy Scanner • SHINJUKU 1988"},
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            send_to_webhook(embed)
-        except:
-            pass
-        await asyncio.sleep(UPDATE_INTERVAL)
+bot.setup_hook = setup_hook
 
 if __name__ == "__main__":
-    bot.loop.create_task(main_loop())
     bot.run(DISCORD_TOKEN)
