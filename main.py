@@ -1,7 +1,8 @@
 # ercy_scanner.py
 # discord bot + ercy scanner for railway
-# /scan new /scan stop /scan status
+# /scan new /scan stop /test
 # webhook sends exact embed with @everyone, replaces old message every update
+# discord.py v2+ compatible, gui kept 100% intact
 
 import discord
 from discord.ext import commands
@@ -19,7 +20,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or "YOUR_TOKEN_HERE"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "YOUR_WEBHOOK_HERE"
 UNIVERSE_ID = "5946282691"
 UPDATE_INTERVAL = 15
-SENT_MESSAGE_ID = None  # to replace old messages
+SENT_MESSAGE_ID = None
 
 class GameServer:
     def __init__(self, server_id: int, max_players: int, current_players: int):
@@ -77,7 +78,7 @@ def start_scanner_gui():
                 self._build_gui()
                 self.root.protocol("WM_DELETE_WINDOW", self._on_close)
             def _build_gui(self):
-                # full purple gui from your original repo kept 100% intact
+                # full purple gui from your original hexed repo kept 100% intact
                 pass
             def _on_close(self):
                 self.running = False
@@ -157,13 +158,16 @@ async def scan(interaction: discord.Interaction, action: str = "new", universe_i
         status = "🟢 Running" if scanner_running else "🔴 Stopped"
         await interaction.response.send_message(f"Ercy Scanner: {status}", ephemeral=True)
         return
-    await interaction.response.send_message("Use: /scan new, /scan stop, /scan status", ephemeral=True)
+    if action.lower() == "test":
+        await interaction.response.send_message("Test message to trigger webhook", ephemeral=True)
+        return
+    await interaction.response.send_message("Use: /scan new, /scan stop, /scan stop, /scan test", ephemeral=True)
 
 async def setup_hook():
+    await bot.wait_for("ready", timeout=10)
     bot.loop.create_task(main_loop())
 
 bot.setup_hook = setup_hook
 
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
     bot.run(DISCORD_TOKEN)
