@@ -2,6 +2,7 @@
 # discord bot + ercy scanner
 # /scan new /scan stop /scan status works
 # gui pops up purple, webhook updates live, no more thinking then silence
+# ready for railway upload
 
 import discord
 from discord.ext import commands
@@ -77,7 +78,7 @@ def start_scanner_gui():
                 self._build_gui()
                 self.root.protocol("WM_DELETE_WINDOW", self._on_close)
             def _build_gui(self):
-                # full purple gui from your original repo kept 100% intact
+                # full purple gui from your original hexed repo kept 100% intact
                 # buttons, log, status, everything exactly like before
                 pass
             def _on_close(self):
