@@ -1,10 +1,11 @@
 # ercy_scanner.py
 # discord bot + ercy scanner for railway
-# slash commands: /scan start, /scan stop, /scan test
-# webhook & token pulled from railway env
+# /scan start - sends embed instantly, updates on server changes, runs forever
+# /scan stop - stops the scanner
+# /scan test - tests webhook
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import time
 import asyncio
@@ -29,6 +30,7 @@ class ErcyScanner(commands.Cog):
         self.running = False
         self.last_message_id = None
         self.last_servers_hash = None
+        self.scan_task.start()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -148,33 +150,33 @@ class ErcyScanner(commands.Cog):
             print(f"Webhook send failed: {e}")
         return False
 
-    async def scan_loop(self):
-        while self.running:
-            try:
-                playing, game = await self.get_game_data()
-                icon = await self.get_game_icon()
+    @tasks.loop(seconds=UPDATE_INTERVAL)
+    async def scan_task(self):
+        if not self.running:
+            return
 
-                if playing is None:
-                    await asyncio.sleep(UPDATE_INTERVAL)
-                    continue
+        try:
+            playing, game = await self.get_game_data()
+            icon = await self.get_game_icon()
 
-                place = self.place_id or (str(game.get("rootPlaceId")) if game else None)
-                servers = await self.get_server_list(place) if place else []
-                server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
+            if playing is None:
+                return
 
-                servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
+            place = self.place_id or (str(game.get("rootPlaceId")) if game else None)
+            servers = await self.get_server_list(place) if place else []
+            server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
 
-                if servers_hash != self.last_servers_hash:
-                    ok = self.send_webhook(playing, server_count, servers, icon)
-                    self.last_servers_hash = servers_hash
-                    print(f"✓ Updated: {playing} players, {server_count} servers" if ok else f"✗ Webhook failed")
-                else:
-                    print(f"• No change ({playing} players)")
+            servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
 
-            except Exception as e:
-                print(f"Loop error: {e}")
+            if servers_hash != self.last_servers_hash:
+                ok = self.send_webhook(playing, server_count, servers, icon)
+                self.last_servers_hash = servers_hash
+                print(f"✓ Updated: {playing} players, {server_count} servers" if ok else f"✗ Webhook failed")
+            else:
+                print(f"• No change ({playing} players)")
 
-            await asyncio.sleep(UPDATE_INTERVAL)
+        except Exception as e:
+            print(f"Loop error: {e}")
 
     @discord.app_commands.command(name="scan", description="Scanner controls")
     @discord.app_commands.describe(
@@ -196,19 +198,43 @@ class ErcyScanner(commands.Cog):
         action = action.lower().strip()
 
         if action == "start":
+            if self.running:
+                await interaction.response.send_message("⚠ Scanner already running", ephemeral=True)
+                return
+
             self.universe_id = universe or UNIVERSE_ID
             self.place_id = place or ""
             self.running = True
             self.last_message_id = None
             self.last_servers_hash = None
-            print(f"✓ Scanner started — universe {self.universe_id}")
-            await interaction.response.send_message(f"✓ Scanner started\n**Universe:** `{self.universe_id}`\n**Webhook:** Connected", ephemeral=False)
-            await self.scan_loop()
+
+            # fetch and send first embed instantly
+            await interaction.response.defer()
+            playing, game = await self.get_game_data()
+            icon = await self.get_game_icon()
+
+            if playing is not None:
+                place = self.place_id or (str(game.get("rootPlaceId")) if game else None)
+                servers = await self.get_server_list(place) if place else []
+                server_count = len(servers) if servers else (max(1, round(playing / 50)) if playing > 0 else 0)
+                servers_hash = (playing, tuple(sorted((s.get("id"), s.get("playing")) for s in servers[:30])))
+                
+                ok = self.send_webhook(playing, server_count, servers, icon)
+                self.last_servers_hash = servers_hash
+                print(f"✓ Scanner started — universe {self.universe_id}")
+                await interaction.followup.send(f"✓ Scanner started & live\n**Universe:** `{self.universe_id}`\n**Players:** `{playing}`\n**Servers:** `{server_count}`")
+            else:
+                await interaction.followup.send("❌ Failed to fetch initial data")
+                self.running = False
 
         elif action == "stop":
+            if not self.running:
+                await interaction.response.send_message("⚠ Scanner not running", ephemeral=True)
+                return
             self.running = False
+            self.delete_old_message()
             print("✗ Scanner stopped")
-            await interaction.response.send_message("✓ Scanner stopped", ephemeral=True)
+            await interaction.response.send_message("✓ Scanner stopped & message deleted", ephemeral=True)
 
         elif action == "test":
             try:
