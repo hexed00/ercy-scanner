@@ -11,7 +11,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 scanner = None
-bot_token = os.getenv("BOT_TOKEN")
+bot_token = os.getenv("MTU1MDI2Njg4OTIxNTY3MjM4Mg.GzKERo.EX0tSiEXpOJTJ6oQVLhM1Bvp76kRNYtIC4UiYc")
 
 @bot.event
 async def on_ready():
