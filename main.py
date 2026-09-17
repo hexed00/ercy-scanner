@@ -1,11 +1,10 @@
 # ercy_scanner.py
 # discord bot + ercy scanner for railway
-# /scan new /scan stop /scan status works
-# gui pops up purple, webhook updates live, no more thinking then silence
+# /scan new /scan stop /scan status
+# webhook sends exact embed with @everyone, replaces old message every update
 
 import discord
 from discord.ext import commands
-import sys
 import os
 import asyncio
 import threading
@@ -20,6 +19,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or "YOUR_TOKEN_HERE"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "YOUR_WEBHOOK_HERE"
 UNIVERSE_ID = "5946282691"
 UPDATE_INTERVAL = 15
+SENT_MESSAGE_ID = None  # to replace old messages
 
 class GameServer:
     def __init__(self, server_id: int, max_players: int, current_players: int):
@@ -88,6 +88,21 @@ def start_scanner_gui():
     except:
         pass
 
+async def send_discord_embed(embed):
+    global SENT_MESSAGE_ID
+    try:
+        async with bot.session.post(WEBHOOK_URL, json={"embeds": [embed]}) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if SENT_MESSAGE_ID:
+                    try:
+                        await bot.http.delete_message(0, SENT_MESSAGE_ID)
+                    except:
+                        pass
+                SENT_MESSAGE_ID = data.get("id")
+    except:
+        pass
+
 async def main_loop():
     while True:
         if not scanner_running:
@@ -97,13 +112,14 @@ async def main_loop():
             total, servers = get_roblox_player_count(UNIVERSE_ID)
             num_servers, _ = server_list.update(servers)
             embed = {
-                "title": "Ercy Scanner Update",
-                "description": f"**Servers:** {num_servers}\n**Total Players:** {total}\n**Last update:** {datetime.now().strftime('%H:%M')}",
+                "title": "SHINJUKU 1988 • Ercy Scanner",
+                "description": f"Players Online: {total}\nActive Servers: {num_servers}\nServer List (0 shown)\nNo public servers returned",
                 "color": 0x9B59B6,
-                "footer": {"text": "Ercy Scanner • SHINJUKU 1988"},
-                "timestamp": datetime.utcnow().isoformat()
+                "footer": {"text": "Ercy Scanner • Live: " + datetime.now().strftime("%m/%d/%y, %H:%M")},
+                "timestamp": datetime.utcnow().isoformat(),
+                "image": {"url": "https://media.tenor.com/7o8z6v2v9s8AAAAM/shinjuku-1988.gif"}
             }
-            send_to_webhook(embed)
+            await send_discord_embed(embed)
         except:
             pass
         await asyncio.sleep(UPDATE_INTERVAL)
@@ -149,4 +165,5 @@ async def setup_hook():
 bot.setup_hook = setup_hook
 
 if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
     bot.run(DISCORD_TOKEN)
